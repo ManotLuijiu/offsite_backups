@@ -1,0 +1,2 @@
+# Pre-commit hook
+echo "Running pre-commit hooks..."
