@@ -7,6 +7,7 @@ from urllib.parse import quote
 import frappe
 from apiclient.http import MediaFileUpload
 from frappe import _
+from frappe.database.utils import dangerously_reconnect_on_connection_abort
 from frappe.integrations.google_oauth import GoogleOAuth
 from frappe.model.document import Document
 from frappe.utils import get_backups_path, get_bench_path
@@ -52,11 +53,7 @@ class GoogleDrive(Document):
 			button_label = frappe.bold(_("Allow Google Drive Access"))
 			raise frappe.ValidationError(_("Click on {0} to generate Refresh Token.").format(button_label))
 
-		oauth_config = {
-			"domain_callback_url": "offsite_backups.offsite_backups.doctype.google_drive.google_drive.authorize_access",
-			"service_version": ("drive", "v3"),
-		}
-		oauth_obj = GoogleOAuth("drive", config=oauth_config)
+		oauth_obj = get_google_drive_oauth_obj()
 		r = oauth_obj.refresh_access_token(
 			self.get_password(fieldname="refresh_token", raise_exception=False)
 		)
@@ -64,15 +61,23 @@ class GoogleDrive(Document):
 		return r.get("access_token")
 
 
+def get_google_drive_oauth_obj():
+	oauth_config = {
+		"domain_callback_url": "offsite_backups.offsite_backups.doctype.google_drive.google_drive.authorize_access",
+		"service_version": ("drive", "v3"),
+	}
+	return GoogleOAuth("drive", config=oauth_config)
+
+
 @frappe.whitelist(methods=["POST"])
-def authorize_access(reauthorize=False, code=None):
+def authorize_access(reauthorize: bool = False, code: str | None = None):
 	"""
 	If no Authorization code get it from Google and then request for Refresh Token.
 	Google Contact Name is set to flags to set_value after Authorization Code is obtained.
 	"""
 
 	oauth_code = frappe.db.get_single_value("Google Drive", "authorization_code") if not code else code
-	oauth_obj = GoogleOAuth("drive")
+	oauth_obj = get_google_drive_oauth_obj()
 
 	if not oauth_code or reauthorize:
 		if reauthorize:
@@ -93,7 +98,7 @@ def authorize_access(reauthorize=False, code=None):
 def get_google_drive_object():
 	"""Return an object of Google Drive."""
 	account = frappe.get_doc("Google Drive")
-	oauth_obj = GoogleOAuth("drive")
+	oauth_obj = get_google_drive_oauth_obj()
 
 	google_drive = oauth_obj.get_google_service_object(
 		account.get_access_token(),
@@ -203,9 +208,14 @@ def upload_system_backup_to_google_drive():
 			send_email(False, "Google Drive", "Google Drive", "email", error_status=e)
 
 	set_progress(3, _("Uploading successful."))
-	frappe.db.set_single_value("Google Drive", "last_backup_on", frappe.utils.now_datetime())
+	set_last_backup_on()
 	send_email(True, "Google Drive", "Google Drive", "email")
 	return _("Google Drive Backup Successful.")
+
+
+@dangerously_reconnect_on_connection_abort
+def set_last_backup_on():
+	frappe.db.set_single_value("Google Drive", "last_backup_on", frappe.utils.now_datetime())
 
 
 def daily_backup():
